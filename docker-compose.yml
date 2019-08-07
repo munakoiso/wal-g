@@ -56,6 +56,13 @@ services:
     image: wal-g/pg
     container_name: wal-g_pg
 
+  pg_prefix:
+    build:
+      dockerfile: docker/pg_tests/Dockerfile_prefix
+      context: .
+    image: wal-g/docker_prefix
+    container_name: wal-g_docker_prefix
+
   pg_tests:
     build:
       dockerfile: docker/pg_tests/Dockerfile
