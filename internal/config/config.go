@@ -4,16 +4,15 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"os/signal"
 	"os/user"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/spf13/cast"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -78,6 +77,7 @@ const (
 	PgpEnvelopeYcSaKeyFileSetting = "WALG_ENVELOPE_PGP_YC_SERVICE_ACCOUNT_KEY_FILE"
 	PgpEnvelopeYcEndpointSetting  = "WALG_ENVELOPE_PGP_YC_ENDPOINT"
 	PgpEnvelopeCacheExpiration    = "WALG_ENVELOPE_CACHE_EXPIRATION"
+	DirectIO                      = "WALG_DIRECT_IO"
 
 	PgDataSetting                        = "PGDATA"
 	UserSetting                          = "USER" // TODO : do something with it
@@ -91,8 +91,11 @@ const (
 	PgSslKey                             = "PGSSLKEY"
 	PgSslCert                            = "PGSSLCERT"
 	PgSslRootCert                        = "PGSSLROOTCERT"
+	PgAppName                            = "PGAPPNAME"
 	PgSlotName                           = "WALG_SLOTNAME"
 	PgWalSize                            = "WALG_PG_WAL_SIZE"
+	PgWalPageSize                        = "WALG_PG_WAL_PAGE_SIZE"
+	PgBlockSize                          = "WALG_PG_BLOCK_SIZE"
 	TotalBgUploadedLimit                 = "TOTAL_BG_UPLOADED_LIMIT"
 	NameStreamCreateCmd                  = "WALG_STREAM_CREATE_COMMAND"
 	NameStreamRestoreCmd                 = "WALG_STREAM_RESTORE_COMMAND"
@@ -126,23 +129,24 @@ const (
 	ProfileMode          = "PROFILE_MODE"
 	ProfilePath          = "PROFILE_PATH"
 
-	MongoDBUriSetting                  = "MONGODB_URI"
-	MongoDBLastWriteUpdateInterval     = "MONGODB_LAST_WRITE_UPDATE_INTERVAL"
-	MongoDBExtendBackupCursor          = "MONGODB_EXTEND_BACKUP_CURSOR"
-	MongoDBDeletionProtectionWhitelist = "MONGODB_DELETION_PROTECTION_WHITELIST"
-	OplogArchiveAfterSize              = "OPLOG_ARCHIVE_AFTER_SIZE"
-	OplogArchiveTimeoutInterval        = "OPLOG_ARCHIVE_TIMEOUT_INTERVAL"
-	OplogPITRDiscoveryInterval         = "OPLOG_PITR_DISCOVERY_INTERVAL"
-	OplogPushStatsEnabled              = "OPLOG_PUSH_STATS_ENABLED"
-	OplogPushStatsLoggingInterval      = "OPLOG_PUSH_STATS_LOGGING_INTERVAL"
-	OplogPushStatsUpdateInterval       = "OPLOG_PUSH_STATS_UPDATE_INTERVAL"
-	OplogPushStatsExposeHTTP           = "OPLOG_PUSH_STATS_EXPOSE_HTTP"
-	OplogPushWaitForBecomePrimary      = "OPLOG_PUSH_WAIT_FOR_BECOME_PRIMARY"
-	OplogPushPrimaryCheckInterval      = "OPLOG_PUSH_PRIMARY_CHECK_INTERVAL"
-	OplogReplayOplogAlwaysUpsert       = "OPLOG_REPLAY_OPLOG_ALWAYS_UPSERT"
-	OplogReplayOplogApplicationMode    = "OPLOG_REPLAY_OPLOG_APPLICATION_MODE"
-	OplogReplayIgnoreErrorCodes        = "OPLOG_REPLAY_IGNORE_ERROR_CODES"
-	OplogRecoverTimeout                = "OPLOG_RECOVER_TIMEOUT"
+	MongoDBUriSetting                   = "MONGODB_URI"
+	MongoDBLastWriteUpdateInterval      = "MONGODB_LAST_WRITE_UPDATE_INTERVAL"
+	MongoDBExtendBackupCursor           = "MONGODB_EXTEND_BACKUP_CURSOR"
+	MongoDBDeletionProtectionWhitelist  = "MONGODB_DELETION_PROTECTION_WHITELIST"
+	OplogArchiveAfterSize               = "OPLOG_ARCHIVE_AFTER_SIZE"
+	OplogArchiveTimeoutInterval         = "OPLOG_ARCHIVE_TIMEOUT_INTERVAL"
+	OplogPITRDiscoveryInterval          = "OPLOG_PITR_DISCOVERY_INTERVAL"
+	OplogBackupAdditionalSavingInterval = "OPLOG_BACKUP_ADDITIONAL_SAVING_INTERVAL"
+	OplogPushStatsEnabled               = "OPLOG_PUSH_STATS_ENABLED"
+	OplogPushStatsLoggingInterval       = "OPLOG_PUSH_STATS_LOGGING_INTERVAL"
+	OplogPushStatsUpdateInterval        = "OPLOG_PUSH_STATS_UPDATE_INTERVAL"
+	OplogPushStatsExposeHTTP            = "OPLOG_PUSH_STATS_EXPOSE_HTTP"
+	OplogPushWaitForBecomePrimary       = "OPLOG_PUSH_WAIT_FOR_BECOME_PRIMARY"
+	OplogPushPrimaryCheckInterval       = "OPLOG_PUSH_PRIMARY_CHECK_INTERVAL"
+	OplogReplayOplogAlwaysUpsert        = "OPLOG_REPLAY_OPLOG_ALWAYS_UPSERT"
+	OplogReplayOplogApplicationMode     = "OPLOG_REPLAY_OPLOG_APPLICATION_MODE"
+	OplogReplayIgnoreErrorCodes         = "OPLOG_REPLAY_IGNORE_ERROR_CODES"
+	OplogRecoverTimeout                 = "OPLOG_RECOVER_TIMEOUT"
 
 	MysqlDatasourceNameSetting     = "WALG_MYSQL_DATASOURCE_NAME"
 	MysqlSslCaSetting              = "WALG_MYSQL_SSL_CA"
@@ -171,6 +175,8 @@ const (
 	RedisDataThreshold       = "WALG_REDIS_DATA_THRESHOLD"
 	RedisDataTimeout         = "WALG_REDIS_DATA_TIMEOUT"
 	RedisServerProcessName   = "WALG_REDIS_SERVER_PROCESS_NAME"
+	RedisFQDNToIDMap         = "WALG_REDIS_FQDN_TO_ID_MAP"
+	RedisClusterConfPath     = "WALG_REDIS_CLUSTER_CONF_PATH"
 
 	GPLogsDirectory              = "WALG_GP_LOGS_DIR"
 	GPSegContentID               = "WALG_GP_SEG_CONTENT_ID"
@@ -220,6 +226,10 @@ const (
 
 	GoogleApplicationCredentials = "GOOGLE_APPLICATION_CREDENTIALS"
 
+	AlicloudAccessKeyID     = "OSS_ACCESS_KEY_ID"
+	AlicloudAccessKeySecret = "OSS_ACCESS_KEY_SECRET"
+	AlicloudSecurityToken   = "OSS_SESSION_TOKEN"
+
 	SwiftOsAuthURL    = "OS_AUTH_URL"
 	SwiftOsUsername   = "OS_USERNAME"
 	SwiftOsPassword   = "OS_PASSWORD"
@@ -232,6 +242,8 @@ const (
 	SSHPrivateKeyPath = "SSH_PRIVATE_KEY_PATH"
 
 	SystemdNotifySocket = "NOTIFY_SOCKET"
+
+	ForceWalDetal = "WALG_FORCE_WAL_DELTA"
 )
 
 var (
@@ -266,6 +278,7 @@ var (
 		FailoverStoragesCheckTimeout: "30s",
 		FailoverStorageCacheLifetime: "15m",
 		PgpEnvelopeCacheExpiration:   "0",
+		DirectIO:                     "false",
 		LogLevelSetting:              "NORMAL",
 	}
 
@@ -288,6 +301,8 @@ var (
 		RedisDataThreshold:       "90",
 		RedisDataTimeout:         "1",
 		RedisServerProcessName:   "redis-server",
+		RedisFQDNToIDMap:         "{}",
+		RedisClusterConfPath:     "/etc/redis/cluster.conf",
 	}
 
 	MysqlDefaultSettings = map[string]string{
@@ -302,15 +317,21 @@ var (
 
 	PGDefaultSettings = map[string]string{
 		PgWalSize:                 "16",
+		PgWalPageSize:             "8192",
+		PgBlockSize:               "8192",
 		PgBackRestStanza:          "main",
 		PgAliveCheckInterval:      "1m",
 		FailoverStoragesCheckSize: "1mb",
 		PgDaemonWALUploadTimeout:  "60s",
+		ForceWalDetal:             "false",
+		PgAppName:                 "wal-g",
 	}
 
 	GPDefaultSettings = map[string]string{
 		GPLogsDirectory:              "/var/log",
 		PgWalSize:                    "64",
+		PgWalPageSize:                "32768",
+		PgBlockSize:                  "32768",
 		GPSegmentsPollInterval:       "5m",
 		GPSegmentsUpdInterval:        "10s",
 		GPSegmentsPollRetries:        "5",
@@ -320,6 +341,8 @@ var (
 		GPAoDeduplicationAgeLimit:    "720h",    // 30 days
 		GPRelativeRecoveryConfPath:   "recovery.conf",
 		GPRelativePostgresqlConfPath: "postgresql.conf",
+		ForceWalDetal:                "false",
+		PgAppName:                    "wal-g",
 	}
 
 	AllowedSettings map[string]bool
@@ -356,6 +379,7 @@ var (
 		PgpEnvelopeYcKmsKeyIDSetting:  true,
 		PgpEnvelopeYcSaKeyFileSetting: true,
 		PgpEnvelopeYcEndpointSetting:  true,
+		DirectIO:                      false,
 		LibsodiumKeySetting:           true,
 		LibsodiumKeyPathSetting:       true,
 		LibsodiumKeyTransform:         true,
@@ -436,6 +460,20 @@ var (
 		"WALG_GS_PREFIX":             true,
 		GoogleApplicationCredentials: true,
 
+		// Alicloud
+		"WALG_OSS_PREFIX":       true,
+		AlicloudAccessKeyID:     true,
+		AlicloudAccessKeySecret: true,
+		AlicloudSecurityToken:   true,
+		"OSS_ENDPOINT":          true,
+		"OSS_REGION":            true,
+		"OSS_ROLE_ARN":          true,
+		"OSS_ROLE_SESSION_NAME": true,
+		"OSS_MAX_RETRIES":       true,
+		"OSS_CONNECT_TIMEOUT":   true,
+		"OSS_UPLOAD_PART_SIZE":  true,
+		"OSS_COPY_PART_SIZE":    true,
+
 		// Yandex Cloud
 		YcSaKeyFileSetting: true,
 		YcKmsKeyIDSetting:  true,
@@ -474,12 +512,15 @@ var (
 		PgSslRootCert:                        true,
 		PgSlotName:                           true,
 		PgWalSize:                            true,
+		PgWalPageSize:                        true,
+		PgBlockSize:                          true,
 		PrefetchDir:                          true,
 		PgReadyRename:                        true,
 		PgBackRestStanza:                     true,
 		PgAliveCheckInterval:                 true,
 		PgStopBackupTimeout:                  true,
 		FailoverStorages:                     true,
+		FailoverStoragesCheck:                true,
 		FailoverStoragesCheckTimeout:         true,
 		FailoverStorageCacheLifetime:         true,
 		FailoverStorageCacheEMAAliveLimit:    true,
@@ -491,6 +532,8 @@ var (
 		FailoverStoragesCheckSize:            true,
 		PgDaemonWALUploadTimeout:             true,
 		DisablePartialRestore:                true,
+		ForceWalDetal:                        true,
+		PgAppName:                            true,
 	}
 
 	MongoAllowedSettings = map[string]bool{
@@ -557,6 +600,8 @@ var (
 		RedisDataThreshold:       true,
 		RedisDataTimeout:         true,
 		RedisServerProcessName:   true,
+		RedisFQDNToIDMap:         true,
+		RedisClusterConfPath:     true,
 	}
 
 	GPAllowedSettings = map[string]bool{
@@ -582,6 +627,7 @@ var (
 		FailoverStorageCacheEMAAlphaDeadMin:  true,
 		FailoverStoragesCheckSize:            true,
 		DisablePartialRestore:                true,
+		ForceWalDetal:                        true,
 	}
 
 	RequiredSettings       = make(map[string]bool)
@@ -601,6 +647,9 @@ var (
 		AzureStorageAccessKey:        true,
 		AzureStorageSasToken:         true,
 		GoogleApplicationCredentials: true,
+		AlicloudAccessKeyID:          true,
+		AlicloudAccessKeySecret:      true,
+		AlicloudSecurityToken:        true,
 		LibsodiumKeySetting:          true,
 		PgPasswordSetting:            true,
 		PgpKeyPassphraseSetting:      true,
@@ -758,19 +807,6 @@ func Configure() {
 	}
 }
 
-func SetupSignalListener() {
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGUSR1)
-	go func() {
-		for {
-			<-sigCh
-			if err := ConfigureLogging(); err != nil {
-				tracelog.ErrorLogger.Printf("error configuring logging: %s\n", err.Error())
-			}
-		}
-	}()
-}
-
 // ConfigureAndRunDefaultWebServer configures and runs web server
 func ConfigureAndRunDefaultWebServer() error {
 	var ws webserver.WebServer
@@ -904,7 +940,7 @@ func ToFlagName(s string) string {
 // Applicable for Swift/Postgres/etc libs that waiting config paramenters only from ENV.
 func bindConfigToEnv(globalViper *viper.Viper) {
 	for k, v := range globalViper.AllSettings() {
-		val := fmt.Sprint(v)
+		val := cast.ToString(v)
 		k = strings.ToUpper(k)
 
 		// avoid filling environment with empty values :
@@ -1035,6 +1071,18 @@ func GetOplogPITRDiscoveryIntervalSetting() (*time.Duration, error) {
 	dur, err := time.ParseDuration(durStr)
 	if err != nil {
 		return nil, fmt.Errorf("duration expected for %s setting but given '%s': %w", OplogPITRDiscoveryInterval, durStr, err)
+	}
+	return &dur, nil
+}
+
+func GetOplogBackupAdditionalSavingTimeSetting() (*time.Duration, error) {
+	durStr, ok := GetSetting(OplogBackupAdditionalSavingInterval)
+	if !ok {
+		return nil, nil
+	}
+	dur, err := time.ParseDuration(durStr)
+	if err != nil {
+		return nil, fmt.Errorf("duration expected for %s setting but given '%s': %w", OplogBackupAdditionalSavingInterval, durStr, err)
 	}
 	return &dur, nil
 }

@@ -136,7 +136,7 @@ func (w *WalgUtil) PushBackup() (string, error) {
 }
 
 func (w *WalgUtil) PushBinaryBackup() error {
-	_, err := w.runCmd("binary-backup-push")
+	_, err := w.runCmd("binary-backup-push", "--count-journals")
 	if err != nil {
 		return err
 	}
@@ -178,10 +178,18 @@ func (w *WalgUtil) FetchAofBackupByNum(backupNum int, version string) error {
 	return err
 }
 
-func (w *WalgUtil) FetchBinaryBackup(backup, mongodConfigPath, mongodbVersion, rsName, rsMembers string) error {
+func (w *WalgUtil) FetchBinaryBackup(
+	backup, mongodConfigPath, mongodbVersion, rsName, rsMembers, whitelist, blacklist string,
+) error {
 	cli := []string{"binary-backup-fetch", backup, mongodConfigPath, mongodbVersion}
 	if rsName != "" && rsMembers != "" {
 		cli = append(cli, "--mongo-rs-name", rsName, "--mongo-rs-members", rsMembers)
+	}
+	if whitelist != "" {
+		cli = append(cli, "--whitelist", whitelist)
+	}
+	if blacklist != "" {
+		cli = append(cli, "--blacklist", blacklist)
 	}
 	_, err := w.runCmd(cli...)
 	return err

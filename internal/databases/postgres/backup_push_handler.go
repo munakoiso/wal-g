@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgconn"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/wal-g/wal-g/internal"
 	conf "github.com/wal-g/wal-g/internal/config"
@@ -173,13 +173,15 @@ func (bh *BackupHandler) createAndPushBackup(ctx context.Context) {
 	tracelog.ErrorLogger.FatalOnError(err)
 	err = bh.checkDataChecksums()
 	tracelog.ErrorLogger.FatalOnError(err)
+	err = bh.CheckArchiveCommand()
+	tracelog.ErrorLogger.FatalOnError(err)
 
 	if orioledbEnabled {
 		chkpNum := orioledb.GetChkpNum(bh.PgInfo.PgDataDirectory)
 		bh.CurBackupInfo.StartChkpNum = &chkpNum
 	}
-
-	bh.handleDeltaBackup(folder)
+	err = bh.handleDeltaBackup(folder)
+	tracelog.ErrorLogger.FatalOnError(err)
 	tarFileSets := bh.uploadBackup()
 	sentinelDto, filesMetaDto, err := bh.setupDTO(tarFileSets)
 	tracelog.ErrorLogger.FatalOnError(err)
@@ -250,7 +252,7 @@ func (bh *BackupHandler) startBackup() error {
 	return nil
 }
 
-func (bh *BackupHandler) handleDeltaBackup(folder storage.Folder) {
+func (bh *BackupHandler) handleDeltaBackup(folder storage.Folder) error {
 	if len(bh.prevBackupInfo.name) > 0 && bh.prevBackupInfo.sentinelDto.BackupStartLSN != nil {
 		tracelog.InfoLogger.Println("Delta backup enabled")
 		tracelog.DebugLogger.Printf("Previous backup: %s\nBackup start LSN: %s", bh.prevBackupInfo.name,
@@ -268,10 +270,13 @@ func (bh *BackupHandler) handleDeltaBackup(folder storage.Folder) {
 		tracelog.ErrorLogger.FatalOnError(err)
 
 		if useWalDelta {
+			ForceWalDetal, _ := conf.GetBoolSettingDefault(conf.ForceWalDetal, false)
 			err := bh.Workers.Bundle.DownloadDeltaMap(internal.NewFolderReader(folder.GetSubFolder(utility.WalPath)), bh.CurBackupInfo.startLSN)
 			if err == nil {
 				tracelog.InfoLogger.Println("Successfully loaded delta map, delta backup will be made with provided " +
 					"delta map")
+			} else if ForceWalDetal {
+				return errors.Wrapf(err, "Failed to load delta map from previous backup")
 			} else {
 				tracelog.WarningLogger.Printf("Error during loading delta map: '%v'. "+
 					"Fallback to full scan delta backup\n", err)
@@ -280,6 +285,7 @@ func (bh *BackupHandler) handleDeltaBackup(folder storage.Folder) {
 		bh.CurBackupInfo.Name = bh.CurBackupInfo.Name + "_D_" + utility.StripWalFileName(bh.prevBackupInfo.name)
 		tracelog.DebugLogger.Printf("Suffixing Backup name with Delta info: %s", bh.CurBackupInfo.Name)
 	}
+	return nil
 }
 
 func (bh *BackupHandler) setupDTO(tarFileSets internal.TarFileSets) (sentinelDto BackupSentinelDto,
@@ -291,7 +297,7 @@ func (bh *BackupHandler) setupDTO(tarFileSets internal.TarFileSets) (sentinelDto
 	sentinelDto = NewBackupSentinelDto(bh, tablespaceSpec)
 	filesMeta.setFiles(bh.Workers.Bundle.GetFiles())
 	filesMeta.TarFileSets = tarFileSets.Get()
-	if !(viper.IsSet(conf.DisablePartialRestore) && viper.GetBool(conf.DisablePartialRestore)) {
+	if !(viper.GetBool(conf.DisablePartialRestore)) {
 		filesMeta.DatabasesByNames, err = bh.collectDatabaseNamesMetadata()
 	}
 	return sentinelDto, filesMeta, err
@@ -598,7 +604,7 @@ func GetPgServerInfo(keepRunner bool) (pgInfo BackupPgInfo, runner *PgQueryRunne
 	pgInfo.systemIdentifier = queryRunner.SystemIdentifier
 	tracelog.DebugLogger.Printf("Postgres SystemIdentifier: %d", queryRunner.Version)
 
-	pgInfo.Timeline, err = queryRunner.readTimeline()
+	pgInfo.Timeline, err = queryRunner.ReadTimeline()
 	if err != nil {
 		return pgInfo, nil, err
 	}
@@ -685,6 +691,54 @@ func (bh *BackupHandler) checkDataChecksums() error {
 			"checkDataChecksums: Checking if data_checksums is enabled in DB is skipped " +
 				"because the --verify parameter is not set.")
 	}
+	return nil
+}
+
+// CheckArchiveCommand verifies the archive_mode and archive_command settings.
+func (bh *BackupHandler) CheckArchiveCommand() error {
+	// Check if the server is in recovery mode (standby)
+	standby, err := bh.Workers.QueryRunner.IsStandby()
+	if err != nil {
+		tracelog.ErrorLogger.Printf("CheckArchiveCommand: failed to determine standby mode: %v", err)
+		return err
+	}
+
+	if standby {
+		// If the server is in standby mode, no further checks are needed
+		tracelog.DebugLogger.Println("Server is in standby mode. Skipping archive settings checks.")
+		return nil
+	}
+
+	// Retrieve the current archive_mode setting
+	archiveMode, err := bh.Workers.QueryRunner.GetArchiveMode()
+	if err != nil {
+		tracelog.ErrorLogger.Printf("CheckArchiveCommand: failed to get archive_mode: %v", err)
+		return err
+	}
+
+	// Check if archive_mode is enabled
+	if archiveMode != "on" && archiveMode != "always" {
+		tracelog.WarningLogger.Println(
+			"archive_mode is not enabled. This may cause inconsistent backups. " +
+				"Please consider configuring WAL archiving.")
+	} else {
+		// Retrieve the current archive_command setting
+		archiveCommand, err := bh.Workers.QueryRunner.GetArchiveCommand()
+		if err != nil {
+			tracelog.ErrorLogger.Printf("CheckArchiveCommand: failed to get archive_command: %v", err)
+			return err
+		}
+
+		// Check if archive_command is properly configured
+		if len(archiveCommand) == 0 || archiveCommand == "(disabled)" {
+			tracelog.WarningLogger.Println(
+				"archive_command is not configured. This may cause inconsistent backups. " +
+					"Please consider configuring WAL archiving.")
+		} else {
+			tracelog.DebugLogger.Println("WAL archiving settings are configured.")
+		}
+	}
+
 	return nil
 }
 

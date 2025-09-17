@@ -89,6 +89,10 @@ wal-g backup-push --delta-from-name backup_name --config=/path/to/config.yaml
 wal-g backup-push --delta-from-user-data "{ \"x\": [3], \"y\": 4 }" --config=/path/to/config.yaml
 ```
 
+* `WALG_FORCE_WAL_DELTA`
+
+To prevent WAL-G from falling back to a full scan delta backup when it fails to download delta files.
+
 ### ``backup-fetch``
 
 When fetching base backups, the user should pass in the cluster restore configuration and the name of the backup.
@@ -210,6 +214,33 @@ Lists currently available restore points in storage.
 Usage:
 ```bash
 wal-g restore-point-list [--pretty] [--json]
+```
+
+### Continuous recovery (ALPHA version)
+
+NOTE: this feature is in ALPHA stage and is not recommended for production use.
+Note: works only with Cloudberry Databases and Greenplum 6.25+.
+
+Continuous recovery - is Disaster Recovery with 2 clusters. One cluster handles production workload. Second cluster is hot-standby. `wal-g follow-primary` command will apply WAL to all segments of the cluster guaranteeing that cluster state is consistent to some restore point. Users may stop original cluster and promote second cluster when needed (e.g. in case of disaster). All changes applied after last restore point will be lost.
+
+Main difference between PiTR and `wal-g follow-primary` - continuous recovery will not promote cluster (as PiTR does) as a result - database will not start new timeline. And this will allow to apply new restore points.
+
+`wal-g recovery-action` - is a command to control the `recovery_target_action` on all segments. Possible values are `promote`, `shutdown`, `pause` (check documentation for corresponding PostgreSQL version).
+
+Usage:
+```bash
+# restore database from backup
+wal-g backup-fetch LATEST --restore-config=${RESTORE_CONFIG}
+
+# disallow automatic promotion:
+wal-g recovery-action shutdown --restore-config=${RESTORE_CONFIG}
+
+# start continuous recovery (repeat following commands in loop):
+wal-g follow-primary RESTORE_POINT_NAME --restore-config=${RESTORE_CONFIG}
+wait_postgres_shutdown
+
+# promote cluster:
+wal-g recovery-action promote --restore-config=${RESTORE_CONFIG}
 ```
 
 #### Check AO/AOCS tables 

@@ -8,7 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/wal-g/wal-g/internal/abool"
 	"github.com/wal-g/wal-g/internal/statistics"
 
 	"github.com/wal-g/tracelog"
@@ -23,6 +22,7 @@ var ErrorSizeTrackingDisabled = fmt.Errorf("size tracking disabled by DisableSiz
 type Uploader interface {
 	Upload(ctx context.Context, path string, content io.Reader) error
 	UploadFile(ctx context.Context, file ioextensions.NamedReader) error
+	UploadExactFile(ctx context.Context, file ioextensions.NamedReader) error
 	PushStream(ctx context.Context, stream io.Reader) (string, error)
 	PushStreamToDestination(ctx context.Context, stream io.Reader, dstPath string) error
 	Compression() compression.Compressor
@@ -37,12 +37,12 @@ type Uploader interface {
 }
 
 // RegularUploader contains fields associated with uploading tarballs.
-// Multiple tarballs can share one uploader.
+// Multiple tarballs can share one Uploader.
 type RegularUploader struct {
 	UploadingFolder storage.Folder
 	Compressor      compression.Compressor
 	waitGroup       *sync.WaitGroup
-	failed          *abool.AtomicBool
+	failed          atomic.Bool
 	tarSize         *int64
 	dataSize        *int64
 }
@@ -77,7 +77,7 @@ func NewRegularUploader(
 		waitGroup:       &sync.WaitGroup{},
 		tarSize:         new(int64),
 		dataSize:        new(int64),
-		failed:          abool.New(),
+		failed:          atomic.Bool{},
 	}
 	return uploader
 }
@@ -121,26 +121,28 @@ func (uploader *RegularUploader) RawDataSize() (int64, error) {
 // prints alert to stderr.
 func (uploader *RegularUploader) Finish() {
 	uploader.waitGroup.Wait()
-	if uploader.failed.IsSet() {
+	if uploader.failed.Load() {
 		tracelog.ErrorLogger.Printf("WAL-G could not complete upload.\n")
 	}
 }
 
 // Clone creates similar Uploader with new WaitGroup
 func (uploader *RegularUploader) Clone() Uploader {
-	return &RegularUploader{
+	clone := &RegularUploader{
 		UploadingFolder: uploader.UploadingFolder,
 		Compressor:      uploader.Compressor,
 		waitGroup:       &sync.WaitGroup{},
-		failed:          abool.NewBool(uploader.Failed()),
+		failed:          atomic.Bool{},
 		tarSize:         uploader.tarSize,
 		dataSize:        uploader.dataSize,
 	}
+	clone.failed.Store(uploader.Failed())
+	return clone
 }
 
 // TODO : unit tests
 // UploadFile compresses a file and uploads it.
-func (uploader *RegularUploader) UploadFile(ctx context.Context, file ioextensions.NamedReader) error {
+func (uploader *RegularUploader) uploadFile(ctx context.Context, file ioextensions.NamedReader, isExactPath bool) error {
 	filename := file.Name()
 
 	fileReader := file.(io.Reader)
@@ -148,11 +150,24 @@ func (uploader *RegularUploader) UploadFile(ctx context.Context, file ioextensio
 		fileReader = utility.NewWithSizeReader(fileReader, uploader.dataSize)
 	}
 	compressedFile := CompressAndEncrypt(fileReader, uploader.Compressor, ConfigureCrypter())
-	dstPath := utility.SanitizePath(filepath.Base(filename) + "." + uploader.Compressor.FileExtension())
+
+	dstPath := utility.SanitizePath(filename)
+	if !isExactPath {
+		dstPath = utility.SanitizePath(filepath.Base(filename) + "." + uploader.Compressor.FileExtension())
+	}
 
 	err := uploader.Upload(ctx, dstPath, compressedFile)
 	tracelog.InfoLogger.Println("FILE PATH:", dstPath)
 	return err
+}
+
+func (uploader *RegularUploader) UploadFile(ctx context.Context, file ioextensions.NamedReader) error {
+	return uploader.uploadFile(ctx, file, false)
+}
+
+// UploadFile compresses a file and uploads it by exact path.
+func (uploader *RegularUploader) UploadExactFile(ctx context.Context, file ioextensions.NamedReader) error {
+	return uploader.uploadFile(ctx, file, true)
 }
 
 // DisableSizeTracking stops bandwidth tracking
@@ -177,7 +192,7 @@ func (uploader *RegularUploader) Upload(ctx context.Context, path string, conten
 	err := uploader.UploadingFolder.PutObjectWithContext(ctx, path, content)
 	if err != nil {
 		statistics.WalgMetrics.UploadedFilesFailedTotal.Inc()
-		uploader.failed.Set()
+		uploader.failed.Load()
 		tracelog.ErrorLogger.Printf(tracelog.GetErrorFormatter()+"\n", err)
 		return err
 	}
@@ -207,7 +222,7 @@ func (uploader *RegularUploader) Folder() storage.Folder {
 }
 
 func (uploader *RegularUploader) Failed() bool {
-	return uploader.failed.IsSet()
+	return uploader.failed.Load()
 }
 
 func (uploader *SplitStreamUploader) Clone() Uploader {
