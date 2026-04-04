@@ -24,6 +24,7 @@ import (
 const adminDB = "admin"
 const localDB = "local"
 const LatestBackupString = "LATEST_BACKUP"
+const LatestOnReplica = "LATEST_ON_REPLICA"
 
 const cursorCreateRetries = 10
 const mongoConnectRetries = 3
@@ -261,6 +262,19 @@ func (mongodService *MongodService) FixShardIdentity(shConfig ShConfig) error {
 	return nil
 }
 
+func (mongodService *MongodService) ClearMinvalid() error {
+	minvalidCol := mongodService.MongoClient.Database(localDB).Collection("replset.minvalid")
+	_, err := minvalidCol.DeleteMany(mongodService.Context, bson.M{})
+	if err != nil {
+		return err
+	}
+	_, err = minvalidCol.InsertOne(mongodService.Context, bson.M{
+		"ts": primitive.Timestamp{T: 0, I: 1},
+		"t":  -1,
+	})
+	return err
+}
+
 func (mongodService *MongodService) FixMongoCfg(mongocfgConfig MongoCfgConfig) error {
 	if mongocfgConfig.Empty() {
 		return nil
@@ -359,59 +373,6 @@ func updateRsConfig(ctx context.Context, localDatabase *mongo.Database, rsConfig
 	}
 
 	return nil
-}
-
-func convertToFile(ident string) string {
-	return fmt.Sprintf("/%s.wt", ident)
-}
-
-type CatalogRecord struct {
-	Type       string            `bson:"type"`
-	Database   string            `bson:"db"`
-	Collection string            `bson:"name"`
-	Ident      string            `bson:"ident"`
-	IndexIdent map[string]string `bson:"idxIdent"`
-}
-
-func CreateBackupRoutesInfo(mongodService *MongodService) (*models.BackupRoutesInfo, error) {
-	routes := models.BackupRoutesInfo{
-		Databases: make(map[string]models.DBInfo),
-		Service:   make(map[string]string),
-	}
-
-	pipeline := mongo.Pipeline{{{Key: "$listCatalog", Value: bson.M{}}}}
-	cursor, err := mongodService.MongoClient.Database(adminDB).Aggregate(mongodService.Context, pipeline)
-	if err != nil {
-		return nil, err
-	}
-
-	for cursor.TryNext(mongodService.Context) {
-		var record CatalogRecord
-		if err = cursor.Decode(&record); err != nil {
-			return nil, err
-		}
-		if record.Type != "collection" {
-			continue
-		}
-
-		indexInfo := make(models.IndexInfo)
-		for index, uri := range record.IndexIdent {
-			indexInfo[index] = models.Paths{DBPath: convertToFile(uri)}
-		}
-
-		colInfo := models.CollectionInfo{
-			Paths:     models.Paths{DBPath: convertToFile(record.Ident)},
-			IndexInfo: indexInfo,
-		}
-
-		if _, ok := routes.Databases[record.Database]; !ok {
-			routes.Databases[record.Database] = make(models.DBInfo)
-		}
-
-		routes.Databases[record.Database][record.Collection] = colInfo
-	}
-
-	return &routes, nil
 }
 
 func replaceData(ctx context.Context, collection *mongo.Collection, drop bool, insertData bson.M) error {
@@ -519,7 +480,13 @@ type ReplyOplogConfig struct {
 	OplogAlwaysUpsert    *bool
 	OplogApplicationMode *string
 
-	HasPitr bool
+	HasPitr             bool
+	Partial             bool
+	WithCatchUpReconfig bool
+	MinimalConfigPath   string
+
+	Whitelist map[string]map[string]struct{}
+	Blacklist map[string]map[string]struct{}
 }
 
 type ShConfig struct {
@@ -552,7 +519,9 @@ func NewShConfig(shardName string, connectionString string) ShConfig {
 	}
 }
 
-func NewReplyOplogConfig(sincePitrStr string, untilPitrStr string) (ReplyOplogConfig, error) {
+func NewReplyOplogConfig(
+	sincePitrStr, untilPitrStr string, partial, withCatchUpReconfig bool, minimalConfigPath string,
+) (ReplyOplogConfig, error) {
 	var roConfig ReplyOplogConfig
 	var err error
 	roConfig.HasPitr = true
@@ -588,6 +557,11 @@ func NewReplyOplogConfig(sincePitrStr string, untilPitrStr string) (ReplyOplogCo
 		conf.OplogReplayOplogApplicationMode); hasOplogApplicationMode {
 		roConfig.OplogApplicationMode = &oplogApplicationMode
 	}
+
+	roConfig.Partial = partial
+	roConfig.WithCatchUpReconfig = withCatchUpReconfig
+	roConfig.MinimalConfigPath = minimalConfigPath
+
 	return roConfig, err
 }
 
@@ -605,6 +579,8 @@ func processTimestamp(arg string, downloader *archive.StorageDownloader) (models
 			return models.Timestamp{}, err
 		}
 		return models.TimestampFromBson(backupMeta.MongoMeta.BackupLastTS), nil
+	case LatestOnReplica:
+		return models.Timestamp{}, nil
 	default:
 		return models.TimestampFromStr(arg)
 	}
@@ -654,4 +630,8 @@ func (shConfig ShConfig) Validate() error {
 		return fmt.Errorf("got shard name %s, but mongocfg connection string is %s", shConfig.ShardName, shConfig.MongoCfgConnectionString)
 	}
 	return nil
+}
+
+func (args RestoreArgs) IsPartial() bool {
+	return len(args.Whitelist)+len(args.Blacklist) > 0
 }

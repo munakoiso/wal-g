@@ -135,8 +135,12 @@ func (w *WalgUtil) PushBackup() (string, error) {
 	return BackupNameFromCreate(exec.Combined()), nil
 }
 
-func (w *WalgUtil) PushBinaryBackup() error {
-	_, err := w.runCmd("binary-backup-push", "--count-journals")
+func (w *WalgUtil) PushBinaryBackup(skipMetadata bool) error {
+	args := []string{"binary-backup-push", "--count-journals"}
+	if skipMetadata {
+		args = append(args, "--skip-metadata")
+	}
+	_, err := w.runCmd(args...)
 	if err != nil {
 		return err
 	}
@@ -252,8 +256,22 @@ func (w *WalgUtil) OplogPush() error {
 	return nil
 }
 
-func (w *WalgUtil) OplogReplay(from, until OpTimestamp) error {
-	_, err := w.runCmd("oplog-replay", from.String(), until.String())
+func (w *WalgUtil) OplogReplay(from, until string, partial, reconfig bool, config string) error {
+	args := []string{"oplog-replay", from, until}
+
+	if reconfig {
+		args = append(args, "--with-catch-up-reconfig")
+	}
+
+	if partial {
+		args = append(args, "--partial")
+	}
+
+	if config != "" {
+		args = append(args, "--minimal-mongod-config-path", config)
+	}
+
+	_, err := w.runCmd(args...)
 	return err
 }
 

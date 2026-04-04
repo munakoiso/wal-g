@@ -217,6 +217,20 @@ func (mr *MockUploaderMockRecorder) UploadFile(ctx, file interface{}) *gomock.Ca
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UploadFile", reflect.TypeOf((*MockUploader)(nil).UploadFile), ctx, file)
 }
 
+// UploadJSON mocks base method.
+func (m *MockUploader) UploadJSON(ctx context.Context, path string, data any) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UploadJSON", ctx, path, data)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UploadJSON indicates an expected call of UploadJSON.
+func (mr *MockUploaderMockRecorder) UploadJSON(ctx, path, data interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UploadJSON", reflect.TypeOf((*MockUploader)(nil).UploadJSON), ctx, path, data)
+}
+
 // UploadedDataSize mocks base method.
 func (m *MockUploader) UploadedDataSize() (int64, error) {
 	m.ctrl.T.Helper()

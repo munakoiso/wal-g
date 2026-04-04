@@ -1,3 +1,5 @@
+export GOEXPERIMENT=jsonv2
+
 MAIN_PG_PATH := main/pg
 MAIN_MYSQL_PATH := main/mysql
 MAIN_SQLSERVER_PATH := main/sqlserver
@@ -6,7 +8,7 @@ MAIN_MONGO_PATH := main/mongo
 MAIN_FDB_PATH := main/fdb
 MAIN_GP_PATH := main/gp
 MAIN_ETCD_PATH := main/etcd
-DOCKER_COMMON := golang ubuntu ubuntu_20_04 s3
+DOCKER_COMMON := golang ubuntu ubuntu_22_04 s3
 CMD_FILES = $(wildcard cmd/**/*.go)
 PKG_FILES = $(wildcard internal/*.go internal/**/*.go internal/**/**/*.go internal/**/**/**/*.go)
 TEST_FILES = $(wildcard test/*.go testtools/*.go)
@@ -15,10 +17,10 @@ COVERAGE_FILE := coverage.out
 TEST := "pg_tests"
 MYSQL_TEST := "mysql_base_tests"
 MYSQL8_TEST := "mysql8_tests"
-MONGO_MAJOR ?= "8.0"
 MONGO_VERSION ?= "8.0.3"
 MONGO_PACKAGE ?= "mongodb-org"
 MONGO_REPO ?= "repo.mongodb.org"
+MONGO_TEST_TYPE ?= "all"
 GOLANGCI_LINT_VERSION ?= "v2.0"
 REDIS_VERSION ?= "6.2.4"
 IMAGE_TYPE ?= "rdb"
@@ -70,10 +72,10 @@ pg_build_image:
 pg_save_image: install_and_build_pg pg_build_image
 	mkdir -p ${CACHE_FOLDER}
 	sudo rm -rf ${CACHE_FOLDER}/*
-	docker save ${IMAGE} | gzip -c > ${CACHE_FILE_DOCKER_PREFIX}
-	docker save wal-g/ubuntu:18.04 | gzip -c > ${CACHE_FILE_UBUNTU_18_04}
-	docker save wal-g/ubuntu:20.04 | gzip -c > ${CACHE_FILE_UBUNTU_20_04}
-	docker save ${IMAGE_GOLANG} | gzip -c > ${CACHE_FILE_GOLANG}
+	docker save ${IMAGE} > ${CACHE_FILE_DOCKER_PREFIX}
+	docker save wal-g/ubuntu:18.04 > ${CACHE_FILE_UBUNTU_18_04}
+	docker save wal-g/ubuntu:22.04 > ${CACHE_FILE_UBUNTU_22_04}
+	docker save ${IMAGE_GOLANG} > ${CACHE_FILE_GOLANG}
 	ls ${CACHE_FOLDER}
 
 pg_integration_test: clean_compose
@@ -82,7 +84,7 @@ pg_integration_test: clean_compose
 		make install_and_build_pg;\
 		make pg_build_image;\
 	else\
-		docker load -i ${CACHE_FILE_DOCKER_PREFIX};\
+		docker load -i ${CACHE_FILE_DOCKER_PREFIX} && rm ${CACHE_FILE_DOCKER_PREFIX};\
 	fi
 	@if echo "$(TEST)" | grep -Fqe "pgbackrest"; then\
 		docker compose build pg_pgbackrest;\
@@ -106,7 +108,7 @@ pg_integration_test: clean_compose
 
 orioledb_integration_test: install_and_build_pg clean_compose load_docker_common
 	docker compose build orioledb
-	docker compose up --exit-code-from $(TEST) $(TEST)
+	docker compose up --exit-code-from orioledb orioledb
 	make clean_compose
 
 .PHONY: clean_compose
@@ -142,9 +144,9 @@ load_docker_common:
 		echo "Rebuild";\
 		docker compose build $(DOCKER_COMMON);\
 	else\
-		docker load -i ${CACHE_FILE_UBUNTU_18_04};\
-		docker load -i ${CACHE_FILE_UBUNTU_20_04};\
-		docker load -i ${CACHE_FILE_GOLANG};\
+		docker load -i ${CACHE_FILE_UBUNTU_18_04} && rm ${CACHE_FILE_UBUNTU_18_04};\
+		docker load -i ${CACHE_FILE_UBUNTU_22_04} && rm ${CACHE_FILE_UBUNTU_22_04};\
+		docker load -i ${CACHE_FILE_GOLANG} && rm ${CACHE_FILE_GOLANG};\
 	fi
 
 mysql_integration_test: deps mysql_build unlink_brotli load_docker_common
@@ -181,11 +183,23 @@ mongo_install: mongo_build
 mongo_features:
 	set -e
 	make go_deps
-	cd tests_func/ && MONGO_MAJOR=$(MONGO_MAJOR) MONGO_VERSION=$(MONGO_VERSION) MONGO_PACKAGE=$(MONGO_PACKAGE) MONGO_REPO=$(MONGO_REPO) go test -v -count=1 -timeout 20m  --tf.test=true --tf.debug=true --tf.clean=true --tf.stop=true --tf.database=mongodb
+	cd tests_func/ && MONGO_VERSION=$(MONGO_VERSION) MONGO_PACKAGE=$(MONGO_PACKAGE) MONGO_REPO=$(MONGO_REPO) MONGO_TEST_TYPE=$(MONGO_TEST_TYPE) go test -v -count=1 -timeout 45m  --tf.test=true --tf.debug=true --tf.clean=true --tf.stop=true --tf.database=mongodb
+
+mongo_binary_features:
+	MONGO_TEST_TYPE="binary" $(MAKE) mongo_features
+
+mongo_logical_features:
+	MONGO_TEST_TYPE="logical" $(MAKE) mongo_features
+
+mongo_partial_features:
+	MONGO_TEST_TYPE="partial" $(MAKE) mongo_features
+
+mongo_catch_up_features:
+	MONGO_TEST_TYPE="catch_up" $(MAKE) mongo_features
 
 clean_mongo_features:
 	set -e
-	cd tests_func/ && MONGO_MAJOR=$(MONGO_MAJOR) MONGO_VERSION=$(MONGO_VERSION) MONGO_PACKAGE=$(MONGO_PACKAGE) MONGO_REPO=$(MONGO_REPO) go test -v -count=1  -timeout 5m --tf.test=false --tf.debug=false --tf.clean=true --tf.stop=true --tf.database=mongodb
+	cd tests_func/ && MONGO_VERSION=$(MONGO_VERSION) MONGO_PACKAGE=$(MONGO_PACKAGE) MONGO_REPO=$(MONGO_REPO) go test -v -count=1  -timeout 5m --tf.test=false --tf.debug=false --tf.clean=true --tf.stop=true --tf.database=mongodb
 
 fdb_build: $(CMD_FILES) $(PKG_FILES)
 	(cd $(MAIN_FDB_PATH) && go build -mod vendor -tags "$(BUILD_TAGS)" -o wal-g -gcflags "$(BUILD_GCFLAGS)" -ldflags "-s -w")
